@@ -174,10 +174,12 @@ From the review body, extract the SCORE. Search for ANY of these patterns (case-
 - `Rating: X/5`
 - Any number 1-5 followed by `/5`
 
-#### 3C: Filter out already-handled comments
+#### 3C: Build the NEW_ISSUES list
 
-From the UNADDRESSED_COMMENTS list, remove any comment whose ID is in HANDLED_IDS.
-Also, if LAST_PUSH_ISO is set, call:
+Produce a SINGLE list of genuinely new, unaddressed comments that need fixing.
+
+**If LAST_PUSH_ISO is set** (i.e., you've pushed fixes before in this loop):
+Call `list_merge_request_comments` with the `createdAfter` filter:
 ```
 list_merge_request_comments(
   name: "<REPO>",
@@ -189,27 +191,32 @@ list_merge_request_comments(
   createdAfter: "<LAST_PUSH_ISO>"
 )
 ```
-This gives you ONLY comments created AFTER your last push — these are genuinely NEW issues from the latest review.
+This returns ONLY comments created AFTER your last push — these are the genuinely new issues.
+Set `NEW_ISSUES` = these comments (they are already filtered to unaddressed + post-push).
+
+**If LAST_PUSH_ISO is NOT set** (first iteration, no fixes pushed yet):
+Use the UNADDRESSED_COMMENTS from Step 3A and remove any whose ID is in HANDLED_IDS.
+Set `NEW_ISSUES` = UNADDRESSED_COMMENTS minus HANDLED_IDS.
+
+In both cases, `NEW_ISSUES` is the single authoritative list for the decision below.
 
 #### 3D: MAKE THE DECISION
 
 **Prerequisites**: Steps 3A, 3B, and 3C MUST have completed successfully before evaluating
 this decision tree. Verify that:
 - `SCORE` has been extracted from the latest completed review (Step 3B)
-- `NEW_ISSUES` has been calculated by filtering UNADDRESSED_COMMENTS through HANDLED_IDS (Step 3C)
+- `NEW_ISSUES` has been calculated (Step 3C)
 If either value is missing, re-run the corresponding step before proceeding.
-
-Count the TRULY unaddressed comments:
-- `NEW_ISSUES` = comments from 3C that are NOT in HANDLED_IDS
 
 **DECISION TREE (evaluate IN THIS ORDER):**
 
-1. **SCORE >= 4 AND NEW_ISSUES == 0** → **MERGE PR** ✅
-   Even if `get_merge_request` shows some old comments as "unaddressed", if the latest review
-   found no new issues and scored >= 4/5, the PR is clean. MERGE IT.
+1. **SCORE >= 4 AND NEW_ISSUES == 0 AND get_merge_request shows 0 unaddressed** → **MERGE PR** ✅
+   Both the latest review and the PR analysis confirm everything is clean. MERGE IT.
 
-2. **SCORE >= 4 AND get_merge_request shows 0 unaddressed** → **MERGE PR** ✅
-   The review analysis confirms everything is addressed. MERGE IT.
+2. **SCORE >= 4 AND NEW_ISSUES == 0 BUT get_merge_request shows old unaddressed comments** →
+   Check if ALL old unaddressed comment IDs are in HANDLED_IDS.
+   - If yes (all were previously fixed) → **MERGE PR** ✅ (stale addressed status)
+   - If no (some old comments were never handled) → treat them as NEW_ISSUES → go to **STEP 4: FIX STEP**
 
 3. **SCORE <= 3** → report "SCORE TOO LOW (X/5)" → **HARD STOP** ❌
 
@@ -237,7 +244,7 @@ Count the TRULY unaddressed comments:
 
 2. **Collect issues to fix:**
    Use the NEW_ISSUES from Step 3. Group by file path.
-   Record all comment IDs being fixed into HANDLED_IDS.
+   Save the list of comment IDs being attempted (do NOT add to HANDLED_IDS yet).
 
 3. **Spawn code-fixers:**
    For EACH file with issues, spawn a SEPARATE `code-fixer` agent via the Task tool.
@@ -253,7 +260,7 @@ Count the TRULY unaddressed comments:
    ```
    - If tsc fails → report "FIXES FAILED — tsc errors" → **HARD STOP**
 
-6. **Commit, push, then record timestamp:**
+6. **Commit, push, record state:**
    ```bash
    git add <file1> <file2> ...
    git commit -m "$(cat <<'EOF'
@@ -264,10 +271,13 @@ Count the TRULY unaddressed comments:
    )"
    git push
 
-   # Record timestamp AFTER successful push using the actual commit time
-   # This avoids race conditions where pre-push timestamp diverges from commit time
-   LAST_PUSH_ISO=$(git log -1 --format='%aI')
+   # Record timestamp AFTER successful push using the committer date
+   # Use %cI (committer date) not %aI (author date) — committer date reflects
+   # when the commit was actually pushed, which is what createdAfter needs
+   LAST_PUSH_ISO=$(git log -1 --format='%cI')
    ```
+   **Only after successful push**: Add the attempted comment IDs to HANDLED_IDS.
+   If push fails, do NOT update HANDLED_IDS — the issues were not actually fixed.
 
 7. **Go to STEP 5: POST-FIX REVIEW**
 
