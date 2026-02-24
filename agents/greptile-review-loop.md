@@ -193,6 +193,12 @@ This gives you ONLY comments created AFTER your last push — these are genuinel
 
 #### 3D: MAKE THE DECISION
 
+**Prerequisites**: Steps 3A, 3B, and 3C MUST have completed successfully before evaluating
+this decision tree. Verify that:
+- `SCORE` has been extracted from the latest completed review (Step 3B)
+- `NEW_ISSUES` has been calculated by filtering UNADDRESSED_COMMENTS through HANDLED_IDS (Step 3C)
+If either value is missing, re-run the corresponding step before proceeding.
+
 Count the TRULY unaddressed comments:
 - `NEW_ISSUES` = comments from 3C that are NOT in HANDLED_IDS
 
@@ -247,11 +253,8 @@ Count the TRULY unaddressed comments:
    ```
    - If tsc fails → report "FIXES FAILED — tsc errors" → **HARD STOP**
 
-6. **Record push timestamp and commit:**
+6. **Commit, push, then record timestamp:**
    ```bash
-   # Record timestamp BEFORE push
-   LAST_PUSH_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
    git add <file1> <file2> ...
    git commit -m "$(cat <<'EOF'
    fix: address Greptile review comments
@@ -260,6 +263,10 @@ Count the TRULY unaddressed comments:
    EOF
    )"
    git push
+
+   # Record timestamp AFTER successful push using the actual commit time
+   # This avoids race conditions where pre-push timestamp diverges from commit time
+   LAST_PUSH_ISO=$(git log -1 --format='%aI')
    ```
 
 7. **Go to STEP 5: POST-FIX REVIEW**
