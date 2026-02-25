@@ -267,7 +267,7 @@ If either value is missing, re-run the corresponding step before proceeding.
    if [ -f tsconfig.json ]; then
      bunx tsc --noEmit
    elif [ -f pyproject.toml ] || [ -f setup.py ]; then
-     python -m py_compile <fixed_files>
+     for f in file1.py file2.py; do python -m py_compile "$f" || exit 1; done
    elif [ -f go.mod ]; then
      go build ./...
    elif [ -f Cargo.toml ]; then
@@ -292,8 +292,8 @@ If either value is missing, re-run the corresponding step before proceeding.
 
    # Record timestamp AFTER successful push, with 30-second buffer
    # to account for potential clock skew between local time and Greptile
-   # Try GNU date first (Linux/CI), fall back to BSD date (macOS)
-   LAST_PUSH_ISO=$(date -u -d '30 seconds ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30S +"%Y-%m-%dT%H:%M:%SZ")
+   # Try BSD date first (macOS), fall back to GNU date (Linux/CI)
+   LAST_PUSH_ISO=$(date -u -v-30S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '30 seconds ago' +"%Y-%m-%dT%H:%M:%SZ")
    ```
    **Only after successful push**: Append all IDs from `ATTEMPTED_IDS` to `HANDLED_IDS`.
    If push fails, do NOT update HANDLED_IDS — the issues were not actually fixed.
