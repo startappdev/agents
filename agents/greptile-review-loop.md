@@ -194,9 +194,15 @@ list_merge_request_comments(
 This returns ONLY comments created AFTER your last push — these are the genuinely new issues.
 Set `NEW_ISSUES` = these comments (they are already filtered to unaddressed + post-push).
 
+**Timing note**: `LAST_PUSH_ISO` is recorded AFTER the push completes. Greptile's review
+comments are created seconds to minutes later, so their timestamps will always be after
+`LAST_PUSH_ISO`. If clock skew is a concern, subtract a small buffer (e.g., 30 seconds)
+from `LAST_PUSH_ISO` when using the `createdAfter` filter.
+
 **If LAST_PUSH_ISO is NOT set** (first iteration, no fixes pushed yet):
-Use the UNADDRESSED_COMMENTS from Step 3A and remove any whose ID is in HANDLED_IDS.
-Set `NEW_ISSUES` = UNADDRESSED_COMMENTS minus HANDLED_IDS.
+Use the UNADDRESSED_COMMENTS list from Step 3A (a list of comment objects, each with an `id` field).
+Filter out any comment whose `comment.id` is present in the HANDLED_IDS set.
+Set `NEW_ISSUES` = [c for c in UNADDRESSED_COMMENTS if c.id not in HANDLED_IDS].
 
 In both cases, `NEW_ISSUES` is the single authoritative list for the decision below.
 
@@ -210,20 +216,21 @@ If either value is missing, re-run the corresponding step before proceeding.
 
 **DECISION TREE (evaluate IN THIS ORDER):**
 
-1. **SCORE >= 4 AND NEW_ISSUES == 0 AND get_merge_request shows 0 unaddressed** → **MERGE PR** ✅
-   Both the latest review and the PR analysis confirm everything is clean. MERGE IT.
+1. **SCORE >= 4 AND NEW_ISSUES == 0** → **MERGE PR** ✅
+   The latest review score is passing and there are no genuinely new unaddressed issues.
+   Note: `get_merge_request` may still show old comments as "unaddressed" even after they
+   were fixed, because addressed-status detection is heuristic. Since Step 3C already
+   filtered UNADDRESSED_COMMENTS against HANDLED_IDS, `NEW_ISSUES == 0` means either
+   (a) there are truly zero unaddressed comments, or (b) all remaining unaddressed comments
+   were already fixed in a previous iteration (their IDs are in HANDLED_IDS). In both cases,
+   it is safe to merge.
 
-2. **SCORE >= 4 AND NEW_ISSUES == 0 BUT get_merge_request shows old unaddressed comments** →
-   Check if ALL old unaddressed comment IDs are in HANDLED_IDS.
-   - If yes (all were previously fixed) → **MERGE PR** ✅ (stale addressed status)
-   - If no (some old comments were never handled) → add those old unaddressed comments (not in HANDLED_IDS) to NEW_ISSUES → go to **STEP 4: FIX STEP**
+2. **SCORE <= 3** → report "SCORE TOO LOW (X/5)" → **HARD STOP** ❌
 
-3. **SCORE <= 3** → report "SCORE TOO LOW (X/5)" → **HARD STOP** ❌
-
-4. **NEW_ISSUES > 0** → go to **STEP 4: FIX STEP**
+3. **NEW_ISSUES > 0** → go to **STEP 4: FIX STEP**
    There are genuinely new issues from the latest review that need fixing.
 
-5. **SCORE not found BUT zero unaddressed comments everywhere** →
+4. **SCORE not found BUT zero unaddressed comments everywhere** →
    Log warning "Score not found in review body, but no issues remain."
    Attempt to extract score from ANY field in the get_merge_request or get_code_review response.
    - If found and >= 4 → **MERGE PR** ✅
@@ -244,7 +251,8 @@ If either value is missing, re-run the corresponding step before proceeding.
 
 2. **Collect issues to fix:**
    Use the NEW_ISSUES from Step 3. Group by file path.
-   Save the list of comment IDs being attempted (do NOT add to HANDLED_IDS yet).
+   Save the list of comment IDs being attempted into a variable `ATTEMPTED_IDS`
+   (do NOT add to HANDLED_IDS yet — only after successful push).
 
 3. **Spawn code-fixers:**
    For EACH file with issues, spawn a SEPARATE `code-fixer` agent via the Task tool.
@@ -271,11 +279,11 @@ If either value is missing, re-run the corresponding step before proceeding.
    )"
    git push
 
-   # Record timestamp AFTER successful push using current time
-   # Use ISO 8601 format to match createdAfter filter requirements
-   LAST_PUSH_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+   # Record timestamp AFTER successful push, with 30-second buffer
+   # to account for potential clock skew between local time and Greptile
+   LAST_PUSH_ISO=$(date -u -v-30S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '30 seconds ago' +"%Y-%m-%dT%H:%M:%SZ")
    ```
-   **Only after successful push**: Add the attempted comment IDs to HANDLED_IDS.
+   **Only after successful push**: Append all IDs from `ATTEMPTED_IDS` to `HANDLED_IDS`.
    If push fails, do NOT update HANDLED_IDS — the issues were not actually fixed.
 
 7. **Go to STEP 5: POST-FIX REVIEW**
