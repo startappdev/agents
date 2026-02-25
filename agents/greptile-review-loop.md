@@ -218,10 +218,10 @@ If either value is missing, re-run the corresponding step before proceeding.
 **DECISION TREE (evaluate IN THIS ORDER):**
 
 1. **SCORE >= 4 AND NEW_ISSUES == 0** → **MERGE PR** ✅
-   The latest review score is passing and there are no genuinely new unaddressed issues.
-   `NEW_ISSUES == 0` is reliable because Step 3C filters comments through HANDLED_IDS
-   (when LAST_PUSH_ISO is not set) or through createdAfter + HANDLED_IDS (when it is set).
-   Either way, all previously-fixed comments are excluded. Safe to merge.
+   Verify: re-check `get_merge_request` from Step 3A to confirm zero unaddressed comments
+   (or all unaddressed comment IDs are in HANDLED_IDS). If `get_merge_request` shows
+   unaddressed comments NOT in HANDLED_IDS, add them to NEW_ISSUES and go to STEP 4.
+   Otherwise, safe to merge.
 
 2. **SCORE <= 3** → report "SCORE TOO LOW (X/5)" → **HARD STOP** ❌
 
@@ -244,16 +244,19 @@ If either value is missing, re-run the corresponding step before proceeding.
 1. **Check iteration limit:**
    ```
    ITERATION += 1
-   if ITERATION > 5 → report "MAX 5 ITERATIONS reached" → HARD STOP
+   if ITERATION >= 5 → report "MAX 5 ITERATIONS reached" → HARD STOP
    ```
 
 2. **Collect issues to fix:**
    Initialize a temporary variable: `ATTEMPTED_IDS = []` (scoped to this iteration only).
    Use the NEW_ISSUES from Step 3. Group by file path.
-   For each issue, append its `comment.id` to `ATTEMPTED_IDS`.
+   For each issue in NEW_ISSUES, extract the comment identifier. Both `get_merge_request`
+   and `list_merge_request_comments` return objects with an `id` field — use `issue.id`.
+   Append each `issue.id` to `ATTEMPTED_IDS`.
    Do NOT add to HANDLED_IDS yet — only after successful push.
 
-3. **Spawn code-fixers:**
+3. **Build FIXED_FILES list and spawn code-fixers:**
+   Collect all unique file paths from NEW_ISSUES into a variable `FIXED_FILES`.
    For EACH file with issues, spawn a SEPARATE `code-fixer` agent via the Task tool.
    - Spawn ALL file agents in a **SINGLE message** (parallel execution).
    - Each agent handles EXACTLY ONE file.
@@ -267,7 +270,7 @@ If either value is missing, re-run the corresponding step before proceeding.
    if [ -f tsconfig.json ]; then
      bunx tsc --noEmit
    elif [ -f pyproject.toml ] || [ -f setup.py ]; then
-     for f in file1.py file2.py; do python -m py_compile "$f" || exit 1; done
+     for f in $FIXED_FILES; do python -m py_compile "$f" || exit 1; done
    elif [ -f go.mod ]; then
      go build ./...
    elif [ -f Cargo.toml ]; then
@@ -281,7 +284,7 @@ If either value is missing, re-run the corresponding step before proceeding.
 
 6. **Commit, push, record state:**
    ```bash
-   git add <file1> <file2> ...
+   git add $FIXED_FILES
    git commit -m "$(cat <<'EOF'
    fix: address Greptile review comments
 
@@ -292,11 +295,17 @@ If either value is missing, re-run the corresponding step before proceeding.
 
    # Record timestamp AFTER successful push, with 30-second buffer
    # to account for potential clock skew between local time and Greptile
-   # Try BSD date first (macOS), fall back to GNU date (Linux/CI)
-   LAST_PUSH_ISO=$(date -u -v-30S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '30 seconds ago' +"%Y-%m-%dT%H:%M:%SZ")
+   if [ "$(uname)" = "Darwin" ]; then
+     LAST_PUSH_ISO=$(date -u -v-30S +"%Y-%m-%dT%H:%M:%SZ")
+   else
+     LAST_PUSH_ISO=$(date -u -d '30 seconds ago' +"%Y-%m-%dT%H:%M:%SZ")
+   fi
    ```
-   **Only after successful push**: Append all IDs from `ATTEMPTED_IDS` to `HANDLED_IDS`.
+   **Only after successful push**: Immediately append all IDs from `ATTEMPTED_IDS` to
+   `HANDLED_IDS`. This must happen right after push confirmation, before any other operation.
    If push fails, do NOT update HANDLED_IDS — the issues were not actually fixed.
+   Note: if the agent crashes after push but before updating HANDLED_IDS, those comments
+   may be re-fixed in the next run. This is acceptable — duplicate fixes are harmless.
 
 7. **Go to STEP 5: POST-FIX REVIEW**
 
@@ -309,8 +318,10 @@ After pushing fixes, wait for Greptile to auto-review the update.
 1. **Record current review count** from `list_code_reviews`.
 2. **Poll every 30 seconds for up to 2 minutes:**
    - Call `list_code_reviews`
-   - Check if a NEW review appeared (count increased OR new in-progress/completed review)
-   - **Auto-review detected** → go to **WAIT FOR REVIEW COMPLETION**
+   - Check if review count increased OR a new review ID appeared (regardless of its status —
+     it may already be COMPLETED if it finished within the poll interval)
+   - **New review detected (any status)** → go to **WAIT FOR REVIEW COMPLETION**
+     (if already COMPLETED, WAIT will immediately pass through to STEP 3)
 3. **No auto-review after 2 minutes** → go to **TRIGGER REVIEW** (fallback)
 
 After the new review completes → go to **STEP 3: ANALYZE PR STATE**
