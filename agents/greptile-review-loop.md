@@ -218,10 +218,9 @@ If either value is missing, re-run the corresponding step before proceeding.
 **DECISION TREE (evaluate IN THIS ORDER):**
 
 1. **SCORE >= 4 AND NEW_ISSUES == 0** → **MERGE PR** ✅
-   Verify: re-check `get_merge_request` from Step 3A to confirm zero unaddressed comments
-   (or all unaddressed comment IDs are in HANDLED_IDS). If `get_merge_request` shows
-   unaddressed comments NOT in HANDLED_IDS, add them to NEW_ISSUES and go to STEP 4.
-   Otherwise, safe to merge.
+   Step 3C already incorporated all unaddressed comments from `get_merge_request` and
+   filtered them through HANDLED_IDS and/or createdAfter. No additional verification
+   needed — `NEW_ISSUES == 0` is the definitive signal. Safe to merge.
 
 2. **SCORE <= 3** → report "SCORE TOO LOW (X/5)" → **HARD STOP** ❌
 
@@ -243,9 +242,10 @@ If either value is missing, re-run the corresponding step before proceeding.
 
 1. **Check iteration limit:**
    ```
-   ITERATION += 1
    if ITERATION >= 5 → report "MAX 5 ITERATIONS reached" → HARD STOP
+   ITERATION += 1
    ```
+   Check BEFORE incrementing so that exactly 5 fix cycles can complete.
 
 2. **Collect issues to fix:**
    Initialize a temporary variable: `ATTEMPTED_IDS = []` (scoped to this iteration only).
@@ -256,7 +256,9 @@ If either value is missing, re-run the corresponding step before proceeding.
    Do NOT add to HANDLED_IDS yet — only after successful push.
 
 3. **Build FIXED_FILES list and spawn code-fixers:**
-   Collect all unique file paths from NEW_ISSUES into a variable `FIXED_FILES`.
+   Collect all unique file paths from NEW_ISSUES into an array `FIXED_FILES`.
+   Both `get_merge_request` and `list_merge_request_comments` return objects with
+   a `path` field (the file path) — use `issue.path` to extract it.
    For EACH file with issues, spawn a SEPARATE `code-fixer` agent via the Task tool.
    - Spawn ALL file agents in a **SINGLE message** (parallel execution).
    - Each agent handles EXACTLY ONE file.
@@ -270,7 +272,7 @@ If either value is missing, re-run the corresponding step before proceeding.
    if [ -f tsconfig.json ]; then
      bunx tsc --noEmit
    elif [ -f pyproject.toml ] || [ -f setup.py ]; then
-     for f in $FIXED_FILES; do python -m py_compile "$f" || exit 1; done
+     for f in "${FIXED_FILES[@]}"; do python -m py_compile "$f" || exit 1; done
    elif [ -f go.mod ]; then
      go build ./...
    elif [ -f Cargo.toml ]; then
@@ -284,7 +286,7 @@ If either value is missing, re-run the corresponding step before proceeding.
 
 6. **Commit, push, record state:**
    ```bash
-   git add $FIXED_FILES
+   git add "${FIXED_FILES[@]}" 
    git commit -m "$(cat <<'EOF'
    fix: address Greptile review comments
 
@@ -303,9 +305,11 @@ If either value is missing, re-run the corresponding step before proceeding.
    ```
    **Only after successful push**: Immediately append all IDs from `ATTEMPTED_IDS` to
    `HANDLED_IDS`. This must happen right after push confirmation, before any other operation.
+   `HANDLED_IDS` is kept in-memory throughout the loop — it does not need file persistence
+   because the entire loop runs within a single agent session. If the agent session ends
+   (crash or timeout), a new session starts fresh with `HANDLED_IDS = []`, which is safe
+   because the `createdAfter` filter prevents re-processing old comments anyway.
    If push fails, do NOT update HANDLED_IDS — the issues were not actually fixed.
-   Note: if the agent crashes after push but before updating HANDLED_IDS, those comments
-   may be re-fixed in the next run. This is acceptable — duplicate fixes are harmless.
 
 7. **Go to STEP 5: POST-FIX REVIEW**
 
