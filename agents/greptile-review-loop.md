@@ -216,7 +216,7 @@ If either value is missing, re-run the corresponding step before proceeding.
 2. **SCORE >= 4 AND NEW_ISSUES == 0 BUT get_merge_request shows old unaddressed comments** →
    Check if ALL old unaddressed comment IDs are in HANDLED_IDS.
    - If yes (all were previously fixed) → **MERGE PR** ✅ (stale addressed status)
-   - If no (some old comments were never handled) → treat them as NEW_ISSUES → go to **STEP 4: FIX STEP**
+   - If no (some old comments were never handled) → add those old unaddressed comments (not in HANDLED_IDS) to NEW_ISSUES → go to **STEP 4: FIX STEP**
 
 3. **SCORE <= 3** → report "SCORE TOO LOW (X/5)" → **HARD STOP** ❌
 
@@ -271,10 +271,9 @@ If either value is missing, re-run the corresponding step before proceeding.
    )"
    git push
 
-   # Record timestamp AFTER successful push using the committer date
-   # Use %cI (committer date) not %aI (author date) — committer date reflects
-   # when the commit was actually pushed, which is what createdAfter needs
-   LAST_PUSH_ISO=$(git log -1 --format='%cI')
+   # Record timestamp AFTER successful push using current time
+   # Use ISO 8601 format to match createdAfter filter requirements
+   LAST_PUSH_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
    ```
    **Only after successful push**: Add the attempted comment IDs to HANDLED_IDS.
    If push fails, do NOT update HANDLED_IDS — the issues were not actually fixed.
