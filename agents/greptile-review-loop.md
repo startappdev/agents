@@ -192,12 +192,13 @@ list_merge_request_comments(
 )
 ```
 This returns ONLY comments created AFTER your last push — these are the genuinely new issues.
-Set `NEW_ISSUES` = these comments (they are already filtered to unaddressed + post-push).
+Then filter these comments to exclude any whose `comment.id` is in HANDLED_IDS
+(belt-and-suspenders: prevents re-fixing if Greptile re-creates a comment with the same ID).
+Set `NEW_ISSUES` = [c for c in results if c.id not in HANDLED_IDS].
 
-**Timing note**: `LAST_PUSH_ISO` is recorded AFTER the push completes. Greptile's review
-comments are created seconds to minutes later, so their timestamps will always be after
-`LAST_PUSH_ISO`. If clock skew is a concern, subtract a small buffer (e.g., 30 seconds)
-from `LAST_PUSH_ISO` when using the `createdAfter` filter.
+**Timing note**: `LAST_PUSH_ISO` is recorded AFTER the push completes with a 30-second
+buffer subtracted. Greptile's review comments are created seconds to minutes later, so
+their timestamps will reliably fall after the buffered `LAST_PUSH_ISO`.
 
 **If LAST_PUSH_ISO is NOT set** (first iteration, no fixes pushed yet):
 Use the UNADDRESSED_COMMENTS list from Step 3A (a list of comment objects, each with an `id` field).
@@ -218,12 +219,9 @@ If either value is missing, re-run the corresponding step before proceeding.
 
 1. **SCORE >= 4 AND NEW_ISSUES == 0** → **MERGE PR** ✅
    The latest review score is passing and there are no genuinely new unaddressed issues.
-   Note: `get_merge_request` may still show old comments as "unaddressed" even after they
-   were fixed, because addressed-status detection is heuristic. Since Step 3C already
-   filtered UNADDRESSED_COMMENTS against HANDLED_IDS, `NEW_ISSUES == 0` means either
-   (a) there are truly zero unaddressed comments, or (b) all remaining unaddressed comments
-   were already fixed in a previous iteration (their IDs are in HANDLED_IDS). In both cases,
-   it is safe to merge.
+   `NEW_ISSUES == 0` is reliable because Step 3C filters comments through HANDLED_IDS
+   (when LAST_PUSH_ISO is not set) or through createdAfter + HANDLED_IDS (when it is set).
+   Either way, all previously-fixed comments are excluded. Safe to merge.
 
 2. **SCORE <= 3** → report "SCORE TOO LOW (X/5)" → **HARD STOP** ❌
 
@@ -250,9 +248,10 @@ If either value is missing, re-run the corresponding step before proceeding.
    ```
 
 2. **Collect issues to fix:**
+   Initialize a temporary variable: `ATTEMPTED_IDS = []` (scoped to this iteration only).
    Use the NEW_ISSUES from Step 3. Group by file path.
-   Save the list of comment IDs being attempted into a variable `ATTEMPTED_IDS`
-   (do NOT add to HANDLED_IDS yet — only after successful push).
+   For each issue, append its `comment.id` to `ATTEMPTED_IDS`.
+   Do NOT add to HANDLED_IDS yet — only after successful push.
 
 3. **Spawn code-fixers:**
    For EACH file with issues, spawn a SEPARATE `code-fixer` agent via the Task tool.
@@ -262,11 +261,23 @@ If either value is missing, re-run the corresponding step before proceeding.
 
 4. **WAIT for ALL code-fixer agents to complete.**
 
-5. **Verify fixes compile:**
+5. **Verify fixes (language-aware):**
+   Detect the project type and run the appropriate validation:
    ```bash
-   bunx tsc --noEmit
+   if [ -f tsconfig.json ]; then
+     bunx tsc --noEmit
+   elif [ -f pyproject.toml ] || [ -f setup.py ]; then
+     python -m py_compile <fixed_files>
+   elif [ -f go.mod ]; then
+     go build ./...
+   elif [ -f Cargo.toml ]; then
+     cargo check
+   else
+     echo "No type-checker detected — skipping compilation check"
+   fi
    ```
-   - If tsc fails → report "FIXES FAILED — tsc errors" → **HARD STOP**
+   - If the validation command fails → report "FIXES FAILED — compilation/lint errors" → **HARD STOP**
+   - If no type-checker is detected, skip this step (the review itself serves as validation)
 
 6. **Commit, push, record state:**
    ```bash
@@ -281,7 +292,8 @@ If either value is missing, re-run the corresponding step before proceeding.
 
    # Record timestamp AFTER successful push, with 30-second buffer
    # to account for potential clock skew between local time and Greptile
-   LAST_PUSH_ISO=$(date -u -v-30S +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d '30 seconds ago' +"%Y-%m-%dT%H:%M:%SZ")
+   # Try GNU date first (Linux/CI), fall back to BSD date (macOS)
+   LAST_PUSH_ISO=$(date -u -d '30 seconds ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-30S +"%Y-%m-%dT%H:%M:%SZ")
    ```
    **Only after successful push**: Append all IDs from `ATTEMPTED_IDS` to `HANDLED_IDS`.
    If push fails, do NOT update HANDLED_IDS — the issues were not actually fixed.
