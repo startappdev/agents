@@ -13,7 +13,7 @@ An autonomous agent that runs Greptile code reviews on pull requests, fixes issu
 /greptile-review-loop
 ```
 
-See [skills/greptile-review-loop/README.md](skills/greptile-review-loop/README.md) for full documentation.
+For full documentation, see `agents/greptile-review-loop.md`.
 
 ### Team Review
 
@@ -37,8 +37,6 @@ agents/
 commands/
   greptile-review-loop/     # /greptile-review-loop slash command
   team-review/              # /team-review slash command
-skills/
-  greptile-review-loop/     # Docs, prereqs, examples
 hooks/
   post-pr-greptile-hook.sh  # Post-PR reminder (optional)
 install.sh                  # Interactive installer
