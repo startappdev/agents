@@ -106,7 +106,21 @@ install_command() {
     local name=$1 force=$2
     local src="$REPO_COMMANDS_DIR/$name"
     local dst="$COMMANDS_DIR/$name"
+    local flat_file="$COMMANDS_DIR/${name}.md"
     [ ! -d "$src" ] && { print_error "Command '$name' not found"; return 1; }
+
+    # Handle flat file → directory migration
+    # Claude Code supports both ~/.claude/commands/foo.md and ~/.claude/commands/foo/foo.md
+    # If a flat file exists alongside the directory, it causes duplicate commands
+    if [ -f "$flat_file" ]; then
+        if [ "$force" != "yes" ]; then
+            print_warning "Command '$name' exists as flat file (${name}.md)"
+            read -p "  Replace with directory format? (y/n): " -n 1 -r; echo
+            [[ ! $REPLY =~ ^[Yy]$ ]] && { print_info "Skipped '$name'"; return 0; }
+        fi
+        rm -f "$flat_file"
+        print_info "Removed flat file: ${name}.md"
+    fi
 
     if check_existing_dir "$src" "$dst"; then
         if [ "$force" != "yes" ]; then
