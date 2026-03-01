@@ -35,6 +35,9 @@ You work across ANY repository — detect everything dynamically.
 #      determining which comments are addressed vs unaddressed.       #
 #      It analyzes addressed status based on subsequent commits.      #
 #                                                                     #
+#   7. NEVER merge before ALL CI checks have passed. Even if          #
+#      Greptile gives 5/5 with zero issues, WAIT for CI.             #
+#                                                                     #
 #######################################################################
 
 ## STATE — TRACK THESE VARIABLES THROUGHOUT THE LOOP
@@ -359,7 +362,59 @@ Once completed → go to **STEP 3: ANALYZE PR STATE**
 
 ### MERGE PR
 
-All issues addressed, score >= 4/5. Merge the PR:
+All issues addressed, score >= 4/5. But before merging, ALL CI checks must pass.
+
+#### Wait for CI checks to complete
+
+Poll CI status every 30 seconds for up to 15 minutes:
+```bash
+gh pr checks <PR_NUMBER> --watch --fail-fast
+```
+
+If `--watch` is not available or fails, poll manually:
+```bash
+# Poll loop — max 30 attempts (15 minutes)
+for i in $(seq 1 30); do
+  STATUS=$(gh pr checks <PR_NUMBER> 2>&1)
+  echo "$STATUS"
+
+  # Check if any check failed (case-insensitive to match Fail/FAIL/fail)
+  if echo "$STATUS" | grep -qiE '\tfail\t'; then
+    echo "CI FAILED"
+    break
+  fi
+
+  # Check if any checks are still pending/running
+  # Use \t delimiters to match status column only, not check names/messages
+  if echo "$STATUS" | grep -qiE '\t(pending|in_progress|running)\t'; then
+    if [ "$i" -eq 30 ]; then
+      echo "CI TIMEOUT — checks still pending after 15 minutes"
+      break
+    fi
+    sleep 30
+    continue
+  fi
+
+  # All checks have finished — verify at least one check exists and passed
+  # (protects against no CI checks, or all checks skipped/cancelled)
+  PASS_COUNT=$(echo "$STATUS" | grep -ciE '\tpass\t' || true)
+  if [ "$PASS_COUNT" -gt 0 ]; then
+    echo "ALL CI CHECKS PASSED ($PASS_COUNT checks)"
+    break
+  else
+    echo "CI FAILED — no checks have pass status (checks may be skipped or cancelled)"
+    break
+  fi
+done
+```
+
+**Decision after CI completes:**
+- **At least one CI check passed AND none failed** → proceed to merge below
+- **Any CI check failed** → report "CI FAILED — cannot merge" → **HARD STOP** ❌
+- **No CI checks exist or all are skipped/cancelled** → report "CI FAILED — no checks have pass status" → **HARD STOP** ❌
+- **CI still pending after 15 minutes** → report "CI TIMEOUT — checks did not complete" → **HARD STOP** ❌
+
+#### Merge
 
 ```bash
 gh pr merge <PR_NUMBER> --squash --delete-branch
@@ -370,7 +425,7 @@ If squash merge is not allowed by the repo, fall back to:
 gh pr merge <PR_NUMBER> --merge --delete-branch
 ```
 
-Report: "PR #<number> MERGED SUCCESSFULLY with score X/5" → **DONE (SUCCESS)**
+Report: "PR #<number> MERGED SUCCESSFULLY with score X/5, all CI checks passed" → **DONE (SUCCESS)**
 
 ---
 
@@ -378,11 +433,13 @@ Report: "PR #<number> MERGED SUCCESSFULLY with score X/5" → **DONE (SUCCESS)**
 
 | Stop Condition | Meaning |
 |----------------|---------|
-| **MERGED** | Score >= 4/5, zero issues, PR merged. SUCCESS. |
+| **MERGED** | Score >= 4/5, zero issues, all CI passed, PR merged. SUCCESS. |
 | **NOTHING TO PR** | No changes or commits to create a PR from |
 | **SCORE TOO LOW** | Score is 3/5 or lower — do NOT merge |
 | **SCORE NOT FOUND** | Could not extract score from any source — user must inspect |
 | **FIXES FAILED** | tsc errors after code-fixer agents ran |
+| **CI FAILED** | One or more CI checks failed — cannot merge |
+| **CI TIMEOUT** | CI checks did not complete within 15 minutes |
 | **REVIEW TIMEOUT** | Review did not complete within 10 minutes |
 | **MAX 5 ITERATIONS** | Safety valve to prevent infinite loops |
 
@@ -421,7 +478,8 @@ Task(subagent_type: "code-fixer", description: "Fix billing.ts",
 - **NEVER return to the main chat mid-loop** — you loop internally until done
 - **NEVER combine multiple files into one code-fixer agent**
 - **NEVER merge a PR with score 3/5 or lower**
-- **NEVER loop back after finding zero new issues + score >= 4** — you MUST merge
+- **NEVER merge before ALL CI checks pass** — always wait for CI even if Greptile gives 5/5
+- **NEVER loop back after finding zero new issues + score >= 4** — wait for CI, then MERGE
 
 ## DO NOT USE trigger_code_review MCP TOOL
 
@@ -439,7 +497,7 @@ You report ONCE when the loop terminates:
 **Repository**: <owner/repo>
 **Branch**: <head> → <base>
 **Iterations**: <N> fix-review cycles completed
-**Final Status**: MERGED / SCORE TOO LOW / FIXES FAILED / MAX ITERATIONS / REVIEW TIMEOUT / NOTHING TO PR / SCORE NOT FOUND
+**Final Status**: MERGED / SCORE TOO LOW / FIXES FAILED / CI FAILED / CI TIMEOUT / MAX ITERATIONS / REVIEW TIMEOUT / NOTHING TO PR / SCORE NOT FOUND
 **Final Score**: X/5
 
 ### Loop History:
