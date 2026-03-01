@@ -378,14 +378,19 @@ for i in $(seq 1 30); do
   STATUS=$(gh pr checks <PR_NUMBER> 2>&1)
   echo "$STATUS"
 
-  # Check if any check failed
-  if echo "$STATUS" | grep -qE '\tfail\t'; then
+  # Check if any check failed (case-insensitive to match Fail/FAIL/fail)
+  if echo "$STATUS" | grep -qiE '\tfail\t'; then
     echo "CI FAILED"
     break
   fi
 
   # Check if any checks are still pending/running
-  if echo "$STATUS" | grep -qiE 'pending|in_progress|running'; then
+  # Use \t delimiters to match status column only, not check names/messages
+  if echo "$STATUS" | grep -qiE '\t(pending|in_progress|running)\t'; then
+    if [ "$i" -eq 30 ]; then
+      echo "CI TIMEOUT — checks still pending after 15 minutes"
+      break
+    fi
     sleep 30
     continue
   fi
