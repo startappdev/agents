@@ -384,19 +384,29 @@ for i in $(seq 1 30); do
     break
   fi
 
-  # Check if all checks passed (no "pending" or "in_progress")
-  if ! echo "$STATUS" | grep -qiE 'pending|in_progress|running'; then
-    echo "ALL CHECKS COMPLETE"
-    break
+  # Check if any checks are still pending/running
+  if echo "$STATUS" | grep -qiE 'pending|in_progress|running'; then
+    sleep 30
+    continue
   fi
 
-  sleep 30
+  # All checks have finished — verify at least one check exists and passed
+  # (protects against no CI checks, or all checks skipped/cancelled)
+  PASS_COUNT=$(echo "$STATUS" | grep -ciE '\tpass\t' || true)
+  if [ "$PASS_COUNT" -gt 0 ]; then
+    echo "ALL CI CHECKS PASSED ($PASS_COUNT checks)"
+    break
+  else
+    echo "CI FAILED — no checks have pass status (checks may be skipped or cancelled)"
+    break
+  fi
 done
 ```
 
 **Decision after CI completes:**
-- **All CI checks passed** → proceed to merge below
+- **At least one CI check passed AND none failed** → proceed to merge below
 - **Any CI check failed** → report "CI FAILED — cannot merge" → **HARD STOP** ❌
+- **No CI checks exist or all are skipped/cancelled** → report "CI FAILED — no checks have pass status" → **HARD STOP** ❌
 - **CI still pending after 15 minutes** → report "CI TIMEOUT — checks did not complete" → **HARD STOP** ❌
 
 #### Merge
