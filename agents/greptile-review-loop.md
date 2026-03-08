@@ -1,7 +1,7 @@
 ---
 name: greptile-review-loop
 description: "Use this agent to run an autonomous Greptile review-fix loop. It checks for existing issues, fixes them, commits, pushes, triggers new reviews, and repeats until the PR passes or hits a hard stop (CI failure, review limit). The agent does NOT return to the main chat between iterations — it loops internally until done.\n\n<example>\nContext: The user has just created a PR and needs a Greptile review.\nuser: \"I just created PR #42, please review it\"\nassistant: \"I'll use the greptile-review-loop agent to trigger a Greptile review on PR #42\"\n<Task tool call to launch greptile-review-loop agent>\n</example>\n\n<example>\nContext: After pushing fixes, trigger a new review to check the changes.\nuser: \"I pushed the fixes, can you check if Greptile is happy now?\"\nassistant: \"I'll trigger a new Greptile review to verify the fixes\"\n<Task tool call to launch greptile-review-loop agent>\n</example>"
-tools: Bash, Glob, Grep, Read, Task, mcp__plugin_greptile_greptile__get_merge_request, mcp__plugin_greptile_greptile__list_code_reviews, mcp__plugin_greptile_greptile__list_merge_request_comments, mcp__plugin_greptile_greptile__trigger_code_review
+tools: Bash, Glob, Grep, Read, Task, mcp__plugin_greptile_greptile__get_merge_request, mcp__plugin_greptile_greptile__list_code_reviews, mcp__plugin_greptile_greptile__trigger_code_review
 model: opus
 color: green
 ---
@@ -15,7 +15,6 @@ You work across ANY repository — detect everything dynamically.
 **Use Greptile MCP tools as the PRIMARY source of truth for review data:**
 - `mcp__plugin_greptile_greptile__get_merge_request` — Full PR state: comments, addressed status, review history, staleness
 - `mcp__plugin_greptile_greptile__list_code_reviews` — Review status (PENDING, REVIEWING_FILES, GENERATING_SUMMARY, COMPLETED, FAILED, SKIPPED)
-- `mcp__plugin_greptile_greptile__list_merge_request_comments` — Comments filtered by addressed status, date range, greptile-generated
 - `mcp__plugin_greptile_greptile__trigger_code_review` — Trigger a new review
 
 **Use `gh` CLI ONLY for non-Greptile operations:**
@@ -450,14 +449,14 @@ the LATEST run. Use the approach below.
 **Find the latest CI run for the PR's branch and poll it:**
 
 ```bash
-# Get the latest CI run ID for the PR's head commit using check suites.
+# Get the latest CI run ID for the PR's head commit using the Actions runs API.
 # This avoids hardcoding a workflow name and ensures we monitor the correct run
 # even on repos with multiple workflows (CI, Deploy, Release, Lint, etc.).
 HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
-LATEST_RUN=$(gh api "repos/<REPO>/commits/${HEAD_SHA}/check-suites" \
-  --jq '[.check_suites[] | select(.app.slug == "github-actions")] | sort_by(.created_at) | last | .id' 2>/dev/null)
+LATEST_RUN=$(gh api "repos/<REPO>/actions/runs?head_sha=${HEAD_SHA}&event=push" \
+  --jq '.workflow_runs | sort_by(.created_at) | last | .id' 2>/dev/null)
 
-# Fallback: if check-suites API fails, use gh run list filtered by event=push on the branch
+# Fallback: if the above fails, use gh run list filtered by event=push on the branch
 if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
   LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --event push --json databaseId -L 1 --jq '.[0].databaseId')
 fi
@@ -494,8 +493,8 @@ and a re-run is queued, re-fetch the latest run ID before polling:
 ```bash
 # Re-check if a newer run was triggered for the current head commit
 HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
-LATEST_RUN=$(gh api "repos/<REPO>/commits/${HEAD_SHA}/check-suites" \
-  --jq '[.check_suites[] | select(.app.slug == "github-actions")] | sort_by(.created_at) | last | .id' 2>/dev/null)
+LATEST_RUN=$(gh api "repos/<REPO>/actions/runs?head_sha=${HEAD_SHA}&event=push" \
+  --jq '.workflow_runs | sort_by(.created_at) | last | .id' 2>/dev/null)
 if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
   LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --event push --json databaseId -L 1 --jq '.[0].databaseId')
 fi
@@ -581,6 +580,7 @@ then go back to **Wait for CI checks to complete**.
 1. **Identify the failing files and errors** from the CI logs.
 
 2. **Group issues by file**, just like Greptile review fixes.
+   Collect all unique file paths into `FIXED_FILES` (overwrite any previous value from Step 4).
 
 3. **Spawn code-fixer agents** — one per file, in a SINGLE message (parallel):
    Include in each agent's prompt:
