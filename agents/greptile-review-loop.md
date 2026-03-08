@@ -452,15 +452,24 @@ the LATEST run. Use the approach below.
 # Get the latest CI run ID for the PR's head commit using the Actions runs API.
 # This avoids hardcoding a workflow name and ensures we monitor the correct run
 # even on repos with multiple workflows (CI, Deploy, Release, Lint, etc.).
+# Query by head_sha without event filter to catch both push and pull_request triggers.
 HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
-LATEST_RUN=$(gh api "repos/<REPO>/actions/runs?head_sha=${HEAD_SHA}&event=push" \
-  --jq '.workflow_runs | sort_by(.created_at) | last | .id' 2>/dev/null)
+LATEST_RUN=$(gh api "repos/<REPO>/actions/runs?head_sha=${HEAD_SHA}" \
+  --jq '.workflow_runs | map(select(.event == "push" or .event == "pull_request")) | sort_by(.created_at) | last | .id' 2>/dev/null)
 
-# Fallback: if the above fails, use gh run list filtered by event=push on the branch
+# Fallback: if the above fails, use gh run list without event filter
 if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
-  LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --event push --json databaseId -L 1 --jq '.[0].databaseId')
+  LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --json databaseId,event -L 5 \
+    --jq '[.[] | select(.event == "push" or .event == "pull_request")] | .[0].databaseId')
 fi
 echo "Latest CI run: $LATEST_RUN"
+
+# Guard: if no run was found, report clearly instead of looping with errors
+if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
+  echo "CI RUN NOT FOUND — no matching workflow run for head SHA ${HEAD_SHA}"
+  # Treat as CI TIMEOUT and let the agent handle it
+  break
+fi
 
 # Poll loop — max 30 attempts (15 minutes)
 for i in $(seq 1 30); do
@@ -471,6 +480,12 @@ for i in $(seq 1 30); do
   if [ "$STATUS" = "completed" ]; then
     if [ "$CONCLUSION" = "success" ]; then
       echo "ALL CI CHECKS PASSED"
+      break
+    elif [ "$CONCLUSION" = "cancelled" ] || [ "$CONCLUSION" = "timed_out" ]; then
+      echo "CI RUN $CONCLUSION — treating as transient failure"
+      break
+    elif [ "$CONCLUSION" = "skipped" ]; then
+      echo "CI RUN SKIPPED — no CI checks ran"
       break
     else
       FAILED_JOBS=$(gh run view "$LATEST_RUN" --json jobs --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')
@@ -493,17 +508,21 @@ and a re-run is queued, re-fetch the latest run ID before polling:
 ```bash
 # Re-check if a newer run was triggered for the current head commit
 HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
-LATEST_RUN=$(gh api "repos/<REPO>/actions/runs?head_sha=${HEAD_SHA}&event=push" \
-  --jq '.workflow_runs | sort_by(.created_at) | last | .id' 2>/dev/null)
+LATEST_RUN=$(gh api "repos/<REPO>/actions/runs?head_sha=${HEAD_SHA}" \
+  --jq '.workflow_runs | map(select(.event == "push" or .event == "pull_request")) | sort_by(.created_at) | last | .id' 2>/dev/null)
 if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
-  LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --event push --json databaseId -L 1 --jq '.[0].databaseId')
+  LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --json databaseId,event -L 5 \
+    --jq '[.[] | select(.event == "push" or .event == "pull_request")] | .[0].databaseId')
 fi
 ```
 
 **Decision after CI completes:**
 - **CONCLUSION = "success"** → proceed to **Merge** below
-- **Required CI jobs failed** → go to **STEP 6: INVESTIGATE & FIX CI FAILURE**
+- **CONCLUSION = "cancelled" or "timed_out"** → treat as transient; re-fetch run ID and re-poll (or **HARD STOP** with CI TIMEOUT if repeated)
+- **CONCLUSION = "failure"** → go to **STEP 6: INVESTIGATE & FIX CI FAILURE**
+- **CONCLUSION = "skipped"** → log warning "No CI checks ran"; proceed to **Merge** with caution
 - **CI still pending after 15 minutes** → report "CI TIMEOUT — checks did not complete" → **HARD STOP**
+- **CI RUN NOT FOUND** → report "No matching workflow run found" → **HARD STOP**
 
 #### Merge
 
