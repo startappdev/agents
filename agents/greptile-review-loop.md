@@ -437,6 +437,12 @@ Call `mcp__plugin_greptile_greptile__trigger_code_review` with:
 - `branch` = HEAD_BRANCH
 - `defaultBranch` = DEFAULT_BRANCH
 
+**Fallback:** If the MCP `trigger_code_review` call fails (error, timeout, or no response),
+fall back to triggering via GitHub comment:
+```bash
+gh pr comment <PR_NUMBER> --body "@greptileai please review"
+```
+
 Then go to **WAIT FOR REVIEW COMPLETION** to poll for the review.
 Once completed → go to **STEP 3: ANALYZE PR STATE**
 
@@ -490,8 +496,8 @@ for i in $(seq 1 30); do
       echo "CI RUN $CONCLUSION — treating as transient failure"
       break
     elif [ "$CONCLUSION" = "skipped" ]; then
-      echo "CI RUN SKIPPED — no CI checks ran"
-      break
+      echo "CI SKIPPED — no CI checks ran, cannot verify"
+      exit 1
     else
       FAILED_JOBS=$(gh run view "$LATEST_RUN" --json jobs --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')
       echo "CI FAILED — failed jobs: $FAILED_JOBS"
@@ -525,7 +531,7 @@ fi
 - **CONCLUSION = "success"** → proceed to **Merge** below
 - **CONCLUSION = "cancelled" or "timed_out"** → treat as transient; re-fetch run ID and re-poll (or **HARD STOP** with CI TIMEOUT if repeated)
 - **CONCLUSION = "failure"** → go to **STEP 6: INVESTIGATE & FIX CI FAILURE**
-- **CONCLUSION = "skipped"** → log warning "No CI checks ran"; proceed to **Merge** with caution
+- **CONCLUSION = "skipped"** → report "CI SKIPPED — no CI checks ran, cannot verify" → **HARD STOP**
 - **CI still pending after 15 minutes** → report "CI TIMEOUT — checks did not complete" → **HARD STOP**
 - **CI RUN NOT FOUND** → report "No matching workflow run found" → **HARD STOP**
 
