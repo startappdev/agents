@@ -254,6 +254,12 @@ authoritative list of issues that still need fixing.
 Filter `unaddressedComments` to only include those with `createdAt` AFTER `LAST_PUSH_ISO`.
 These are genuinely NEW issues from the latest review, not leftovers from before.
 
+**Fallback guard:** If the timestamp filter produces `NEW_ISSUES == 0` but
+`reviewAnalysis.unaddressedComments` is non-empty overall, Greptile may be reusing comment
+objects from a prior review cycle (same `commentId`, same `createdAt`) for persistent issues.
+In this case, treat ALL remaining `unaddressedComments` as `NEW_ISSUES` to avoid silently
+skipping unfixed issues.
+
 **If LAST_PUSH_ISO is NOT set** (first iteration):
 Use all `unaddressedComments` as-is.
 
@@ -467,8 +473,7 @@ echo "Latest CI run: $LATEST_RUN"
 # Guard: if no run was found, report clearly instead of looping with errors
 if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
   echo "CI RUN NOT FOUND — no matching workflow run for head SHA ${HEAD_SHA}"
-  # Treat as CI TIMEOUT and let the agent handle it
-  break
+  exit 1
 fi
 
 # Poll loop — max 30 attempts (15 minutes)
