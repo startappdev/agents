@@ -450,16 +450,24 @@ the LATEST run. Use the approach below.
 **Find the latest CI run for the PR's branch and poll it:**
 
 ```bash
-# Get the latest CI run ID for this branch
-LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --json databaseId,status,conclusion -L 1 --jq '.[0].databaseId')
+# Get the latest CI run ID for the PR's head commit using check suites.
+# This avoids hardcoding a workflow name and ensures we monitor the correct run
+# even on repos with multiple workflows (CI, Deploy, Release, Lint, etc.).
+HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
+LATEST_RUN=$(gh api "repos/<REPO>/commits/${HEAD_SHA}/check-suites" \
+  --jq '[.check_suites[] | select(.app.slug == "github-actions")] | sort_by(.created_at) | last | .id' 2>/dev/null)
+
+# Fallback: if check-suites API fails, use gh run list filtered by event=push on the branch
+if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
+  LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --event push --json databaseId -L 1 --jq '.[0].databaseId')
+fi
 echo "Latest CI run: $LATEST_RUN"
 
 # Poll loop — max 30 attempts (15 minutes)
 for i in $(seq 1 30); do
-  RUN_INFO=$(gh run view "$LATEST_RUN" --json status,conclusion,jobs --jq '{status: .status, conclusion: .conclusion}')
-  echo "Poll $i: $RUN_INFO"
-  STATUS=$(echo "$RUN_INFO" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-  CONCLUSION=$(echo "$RUN_INFO" | grep -o '"conclusion":"[^"]*"' | cut -d'"' -f4)
+  STATUS=$(gh run view "$LATEST_RUN" --json status --jq '.status')
+  CONCLUSION=$(gh run view "$LATEST_RUN" --json conclusion --jq '.conclusion')
+  echo "Poll $i: status=$STATUS conclusion=$CONCLUSION"
 
   if [ "$STATUS" = "completed" ]; then
     if [ "$CONCLUSION" = "success" ]; then
@@ -484,8 +492,13 @@ done
 **If the latest run has a transient failure** (e.g., runner timeout on Detect Changes)
 and a re-run is queued, re-fetch the latest run ID before polling:
 ```bash
-# Re-check if a newer run was triggered
-LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --json databaseId -L 1 --jq '.[0].databaseId')
+# Re-check if a newer run was triggered for the current head commit
+HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
+LATEST_RUN=$(gh api "repos/<REPO>/commits/${HEAD_SHA}/check-suites" \
+  --jq '[.check_suites[] | select(.app.slug == "github-actions")] | sort_by(.created_at) | last | .id' 2>/dev/null)
+if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
+  LATEST_RUN=$(gh run list -b <HEAD_BRANCH> --event push --json databaseId -L 1 --jq '.[0].databaseId')
+fi
 ```
 
 **Decision after CI completes:**
@@ -593,7 +606,7 @@ then go back to **Wait for CI checks to complete**.
 
 6. **Commit, push:**
    ```bash
-   git add -A
+   git add "${FIXED_FILES[@]}"
    git commit -m "$(cat <<'EOF'
    fix: resolve CI failures
 
