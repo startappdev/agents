@@ -110,7 +110,8 @@ HEAD_BRANCH    = ""          # source branch
 BASE_BRANCH    = ""          # target branch
 ITERATION        = 0          # fix-push cycle count (HARD STOP at 5)
 LAST_PUSH_ISO    = ""         # ISO timestamp of last push (for createdAfter filter)
-TRANSIENT_RETRIES = 0         # counter for cancelled/timed_out CI re-polls (HARD STOP at 3)
+TRANSIENT_RETRIES  = 0         # counter for cancelled/timed_out CI re-polls (HARD STOP at 3)
+REVIEW_FAIL_RETRIES = 0        # counter for FAILED review retries (HARD STOP at 3)
 ```
 
 ## THE LOOP — STEP BY STEP
@@ -229,7 +230,7 @@ The Greptile confidence score is posted as a **PR issue comment** (not in the MC
 Extract it via `gh` CLI:
 
 ```bash
-gh api repos/<REPO>/issues/<PR_NUMBER>/comments \
+gh api repos/<REPO>/issues/<PR_NUMBER>/comments --paginate \
   --jq '[.[] | select(.user.login == "greptile-apps[bot]")] | last | .body'
 ```
 
@@ -405,7 +406,9 @@ Each iteration:
    - `name` = REPO, `remote` = "github", `defaultBranch` = DEFAULT_BRANCH, `prNumber` = PR_NUMBER
 2. Check the latest review's status:
    - **COMPLETED** → Review is done → go to **STEP 3: ANALYZE PR STATE**
-   - **FAILED** → Review failed → go to **TRIGGER REVIEW** (retry)
+   - **FAILED** → Review failed → increment `REVIEW_FAIL_RETRIES` (track in state, starts at 0).
+     If `REVIEW_FAIL_RETRIES >= 3` → report "REVIEW FAILED 3 TIMES" → **HARD STOP**.
+     Otherwise → go to **TRIGGER REVIEW** (retry).
    - **PENDING / REVIEWING_FILES / GENERATING_SUMMARY** → Still in progress.
      Run `sleep 10` in Bash, then poll again.
 
@@ -497,6 +500,9 @@ for i in $(seq 1 30); do
     elif [ "$CONCLUSION" = "cancelled" ] || [ "$CONCLUSION" = "timed_out" ]; then
       echo "CI RUN $CONCLUSION — treating as transient failure"
       break
+    elif [ "$CONCLUSION" = "action_required" ]; then
+      echo "CI ACTION REQUIRED — manual approval or review gate needed"
+      exit 1
     elif [ "$CONCLUSION" = "skipped" ]; then
       echo "CI SKIPPED — no CI checks ran, cannot verify"
       exit 1
@@ -533,6 +539,7 @@ fi
 - **CONCLUSION = "success"** → proceed to **Merge** below
 - **CONCLUSION = "cancelled" or "timed_out"** → increment `TRANSIENT_RETRIES`. If `TRANSIENT_RETRIES >= 3` → **HARD STOP** (CI TIMEOUT — repeated transient failures). Otherwise, re-fetch run ID and re-poll.
 - **CONCLUSION = "failure"** → go to **STEP 6: INVESTIGATE & FIX CI FAILURE**
+- **CONCLUSION = "action_required"** → report "CI ACTION REQUIRED — manual approval or review gate needed" → **HARD STOP**
 - **CONCLUSION = "skipped"** → report "CI SKIPPED — no CI checks ran, cannot verify" → **HARD STOP**
 - **CI still pending after 15 minutes** → report "CI TIMEOUT — checks did not complete" → **HARD STOP**
 - **CI RUN NOT FOUND** → report "No matching workflow run found" → **HARD STOP**
