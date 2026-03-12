@@ -235,15 +235,15 @@ Each MCP server is configured in a JSON file that the agent container loads at s
       "args": ["@atlassian/jira-mcp-server"],
       "env": {
         "JIRA_HOST": "${JIRA_HOST}",
-        "JIRA_API_TOKEN": "${JIRA_TOKEN}",
-        "JIRA_USER_EMAIL": "${JIRA_EMAIL}"
+        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}",
+        "JIRA_USER_EMAIL": "${JIRA_USER_EMAIL}"
       }
     }
   }
 }
 ```
 
-> **Credential Security**: Environment variables (`${JIRA_TOKEN}`, etc.) are injected by the Credential Proxy at runtime. The agent container never has direct access to raw secrets. The proxy intercepts API calls and injects auth headers.
+> **Credential Security**: Environment variables (`${JIRA_API_TOKEN}`, etc.) are injected by the Credential Proxy at runtime. The agent container never has direct access to raw secrets. The proxy intercepts API calls and injects auth headers.
 
 ---
 
@@ -255,7 +255,7 @@ The platform uses a parent-subagent architecture. A general-purpose Router Agent
 
 | Agent | Model | Tools | Use Cases |
 |---|---|---|---|
-| Router Agent (Parent) | Sonnet 4.5 | Agent, Read | Classify requests, delegate to subagents, synthesize results |
+| Router Agent (Parent) | Haiku 4.5 | Agent, Read | Classify requests, delegate to subagents, synthesize results |
 | Jira Specialist | Sonnet 4.5 | Jira MCP, Confluence MCP | Ticket status, sprint reports, PRD generation, backlog analysis |
 | Infrastructure Expert | Sonnet 4.5 | Bash, DB MCP, Datadog MCP | Service health, deployment status, incident triage |
 | Code Reviewer | Opus 4.6 | GitHub MCP, Read, Grep | PR reviews, security analysis, architecture feedback |
@@ -298,7 +298,7 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
 
 async def handle_request(user_message, session_id=None):
     options = ClaudeAgentOptions(
-        model="claude-sonnet-4-5-20250514",
+        model="claude-haiku-4-5-20251001",
         allowed_tools=["Agent", "Read"],
         system_prompt=open("CLAUDE.md").read(),
         resume=session_id,
