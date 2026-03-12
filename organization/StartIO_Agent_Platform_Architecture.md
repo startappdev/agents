@@ -174,9 +174,9 @@ The knowledge repository is a Git repo that serves as the single source of truth
   |   |   +-- data-analyst.md       # Subagent: Data/SQL
   |   |   +-- security-reviewer.md  # Subagent: Security
   |   +-- hooks/
-  |       +-- audit-logger.js       # Log all agent actions
-  |       +-- pii-filter.js         # Strip PII from output
-  |       +-- cost-guard.js         # Token budget enforcer
+  |       +-- audit-logger.py       # Log all agent actions
+  |       +-- pii-filter.py         # Strip PII from output
+  |       +-- cost-guard.py         # Token budget enforcer
   +-- mcp-configs/
   |   +-- jira.json                 # Jira MCP server config
   |   +-- confluence.json           # Confluence MCP config
@@ -212,7 +212,7 @@ Model Context Protocol (MCP) servers are the standard way to connect agents to e
 
 | Integration | MCP Server | Capabilities | Priority |
 |---|---|---|---|
-| Jira | @atlassian/jira-mcp | Read/create/update tickets, search, transitions, comments | P0 - Phase 1 |
+| Jira | @atlassian/jira-mcp-server | Read/create/update tickets, search, transitions, comments | P0 - Phase 1 |
 | Confluence | @atlassian/confluence-mcp | Read/create pages, search docs, update content | P0 - Phase 1 |
 | GitHub | @github/mcp-server | PRs, issues, code search, reviews, actions status | P0 - Phase 1 |
 | PostgreSQL | Custom MCP | Read-only queries against production replicas | P1 - Phase 2 |
@@ -294,13 +294,13 @@ The Router Agent is implemented using the Claude Agent SDK in Python:
 
 ```python
 # agent_router.py
-from claude_agent_sdk import query, ClaudeAgentOptions, AgentDefinition
+from claude_agent_sdk import query, ClaudeAgentOptions
 
 async def handle_request(user_message, session_id=None):
     options = ClaudeAgentOptions(
         model="claude-haiku-4-5-20251001",
         allowed_tools=["Agent", "Read"],
-        system_prompt=open("CLAUDE.md").read(),
+        system_prompt=open("/workspace/CLAUDE.md").read(),
         resume=session_id,
         mcp_servers=load_mcp_configs(),
         agents={
@@ -393,9 +393,9 @@ Multi-turn conversations are supported through session persistence:
 | Credential Isolation | Proxy pattern | Agent never sees raw tokens; proxy injects headers |
 | Filesystem | Read-only workspace + tmpfs scratch | Knowledge repo mounted read-only; `/tmp` writable |
 | Permission Boundaries | Tool-level allow/deny lists | Each agent type has explicit tool permissions |
-| PII Protection | Output filter hook | `pii-filter.js` strips sensitive data before responses |
+| PII Protection | Output filter hook | `pii-filter.py` strips sensitive data before responses |
 | Audit Trail | Action logging hook | Every tool call logged with timestamp, user, and context |
-| Cost Controls | Token budget hook | `cost-guard.js` enforces per-request and daily limits |
+| Cost Controls | Token budget hook | `cost-guard.py` enforces per-request and daily limits |
 | User Auth | Azure AD integration | Teams bot validates user identity via SSO |
 | Rate Limiting | Per-user throttle | Prevents abuse; configurable per team/role |
 
